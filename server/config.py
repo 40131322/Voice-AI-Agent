@@ -64,6 +64,10 @@ class Settings(BaseModel):
     interaction_agent_model: str = Field(default=_model("OPENPOKE_INTERACTION_MODEL"))
     execution_agent_model: str = Field(default=_model("OPENPOKE_EXECUTION_MODEL"))
     execution_agent_search_model: str = Field(default=_model("OPENPOKE_EXECUTION_SEARCH_MODEL"))
+    # Medical triage runs on the hot path (re-screened after every caller answer),
+    # so point it at a cheaper/faster slug via OPENPOKE_TRIAGE_MODEL. Falls back to
+    # the global default so it works out of the box.
+    triage_model: str = Field(default=_model("OPENPOKE_TRIAGE_MODEL"))
     summarizer_model: str = Field(default=_model("OPENPOKE_SUMMARIZER_MODEL"))
     email_classifier_model: str = Field(default=_model("OPENPOKE_EMAIL_CLASSIFIER_MODEL"))
 

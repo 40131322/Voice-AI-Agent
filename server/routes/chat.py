@@ -42,6 +42,11 @@ def clear_history() -> ChatHistoryClearResponse:
     trigger_service = get_trigger_service()
     trigger_service.clear_all()
 
+    # Begin a fresh medical-intake call so a new conversation gets a new session file
+    from ..services.session import start_new_call
+
+    start_new_call()
+
     return ChatHistoryClearResponse()
 
 

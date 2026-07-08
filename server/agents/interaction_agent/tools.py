@@ -233,6 +233,10 @@ def handle_tool_call(name: str, arguments: Any) -> ToolResult:
             return send_draft(**args)
         if name == "wait":
             return wait(**args)
+        if name == "record_intake":
+            return record_intake(**args)
+        if name == "read_intake":
+            return read_intake(**args)
 
         logger.warning("unexpected tool", extra={"tool": name})
         return ToolResult(success=False, payload={"error": f"Unknown tool: {name}"})
@@ -243,3 +247,15 @@ def handle_tool_call(name: str, arguments: Any) -> ToolResult:
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("tool call failed", extra={"tool": name, "error": str(exc)})
         return ToolResult(success=False, payload={"error": "Failed to execute"})
+
+
+# --- Intake Record tools (session-file blackboard) --------------------------
+# Imported at the bottom, after ToolResult is defined, so the cycle
+# tools -> intake_tools -> tools (for ToolResult) resolves cleanly.
+from .intake_tools import (  # noqa: E402
+    INTAKE_TOOL_SCHEMAS,
+    record_intake,
+    read_intake,
+)
+
+TOOL_SCHEMAS.extend(INTAKE_TOOL_SCHEMAS)

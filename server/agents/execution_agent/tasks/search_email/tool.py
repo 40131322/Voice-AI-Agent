@@ -30,6 +30,13 @@ from .system_prompt import get_system_prompt
 
 # Constants
 MAX_LLM_ITERATIONS = 8
+# Context caps (defense in depth): a large mailbox once loaded 141k tokens into a
+# single search and 400'd on the model's 200k limit. Bound both how many emails a
+# page returns and how much of each email body we keep, so the search loop can
+# never blow the context window regardless of what the LLM requests.
+MAX_SEARCH_RESULTS = 15
+MAX_EMAIL_BODY_CHARS = 2000
+_TRUNCATION_MARKER = "… [truncated]"
 ERROR_GMAIL_NOT_CONNECTED = "Gmail not connected. Please connect Gmail in settings first."
 ERROR_OPENROUTER_NOT_CONFIGURED = "OpenRouter API key not configured. Set OPENROUTER_API_KEY."
 ERROR_EMPTY_QUERY = "search_query must not be empty"
@@ -293,9 +300,15 @@ async def _perform_search(
             error=ERROR_QUERY_REQUIRED,
         )
 
-    # Use LLM-provided max_results or default to 10
-    max_results = arguments.get("max_results", 10)
-    
+    # Use LLM-provided max_results or default to 10, but clamp to a hard ceiling
+    # so a single query can't pull an unbounded page into the context window.
+    requested_results = arguments.get("max_results", 10)
+    try:
+        max_results = min(int(requested_results), MAX_SEARCH_RESULTS)
+    except (TypeError, ValueError):
+        max_results = 10
+    max_results = max(1, max_results)
+
     composio_arguments = {
         "query": query,
         "max_results": max_results,  # Use LLM-provided value or default 10
@@ -423,6 +436,15 @@ def _safe_json_dumps(payload: Any) -> str:
 
 
 
+def _truncate_body(text: Optional[str]) -> Optional[str]:
+    """Bound an email body so a few large emails can't blow the context window."""
+    if text is None:
+        return None
+    if len(text) <= MAX_EMAIL_BODY_CHARS:
+        return text
+    return text[:MAX_EMAIL_BODY_CHARS].rstrip() + _TRUNCATION_MARKER
+
+
 def _processed_to_schema(email: ProcessedEmail) -> GmailSearchEmail:
     """Convert shared processed email into GmailSearchEmail schema."""
 
@@ -435,7 +457,7 @@ def _processed_to_schema(email: ProcessedEmail) -> GmailSearchEmail:
         recipient=email.recipient,
         timestamp=email.timestamp,
         label_ids=list(email.label_ids),
-        clean_text=email.clean_text,
+        clean_text=_truncate_body(email.clean_text),
         has_attachments=email.has_attachments,
         attachment_count=email.attachment_count,
         attachment_filenames=list(email.attachment_filenames),

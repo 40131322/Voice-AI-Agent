@@ -35,9 +35,45 @@ def _set_active_calendar_user_id(user_id: Optional[str]) -> None:
         _ACTIVE_USER_ID = sanitized or None
 
 
+def _lookup_active_calendar_user_id() -> Optional[str]:
+    """Ask Composio for an ACTIVE Google Calendar account and return its user_id.
+
+    The in-memory ``_ACTIVE_USER_ID`` is only populated by a connect/status HTTP
+    call and is lost on every process restart (e.g. uvicorn --reload). Without
+    this rehydration, a booking made after a restart silently falls back to the
+    mock path and never reaches the real calendar even though the account is
+    still connected on Composio's side.
+    """
+    try:
+        client = _get_composio_client()
+        items = client.connected_accounts.list(
+            toolkit_slugs=[_TOOLKIT_SLUG], statuses=["ACTIVE"]
+        )
+        data = getattr(items, "data", None)
+        if data is None and isinstance(items, dict):
+            data = items.get("data")
+        if not data:
+            return None
+        entry = data[0]
+        uid = getattr(entry, "user_id", None)
+        if uid is None and isinstance(entry, dict):
+            uid = entry.get("user_id")
+        return _normalized(uid) or None
+    except Exception:
+        logger.debug("calendar active-user rehydrate failed", exc_info=True)
+        return None
+
+
 def get_active_calendar_user_id() -> Optional[str]:
     with _ACTIVE_USER_ID_LOCK:
-        return _ACTIVE_USER_ID
+        if _ACTIVE_USER_ID:
+            return _ACTIVE_USER_ID
+    # Not cached (fresh process / post-reload) — try to recover a still-active
+    # connection from Composio before giving up and letting callers mock-book.
+    resolved = _lookup_active_calendar_user_id()
+    if resolved:
+        _set_active_calendar_user_id(resolved)
+    return resolved
 
 
 # Start Google Calendar OAuth connection process and return redirect URL
