@@ -119,6 +119,14 @@ export default function SettingsModal({
   const [gmailConnId, setGmailConnId] = useState('');
   const [gmailProfile, setGmailProfile] = useState<Record<string, unknown> | null>(null);
 
+  const [connectingCalendar, setConnectingCalendar] = useState(false);
+  const [isRefreshingCalendar, setIsRefreshingCalendar] = useState(false);
+  const [isDisconnectingCalendar, setIsDisconnectingCalendar] = useState(false);
+  const [calendarStatusMessage, setCalendarStatusMessage] = useState('');
+  const [calendarConnected, setCalendarConnected] = useState(false);
+  const [calendarEmail, setCalendarEmail] = useState('');
+  const [calendarConnId, setCalendarConnId] = useState('');
+
   const readStoredUserId = useCallback(() => {
     if (typeof window === 'undefined') return '';
     try {
@@ -158,6 +166,16 @@ export default function SettingsModal({
     }
   }, [gmailConnId]);
 
+  const readStoredCalendarConnectionRequestId = useCallback(() => {
+    if (calendarConnId) return calendarConnId;
+    if (typeof window === 'undefined') return '';
+    try {
+      return localStorage.getItem('calendar_connection_request_id') || '';
+    } catch {
+      return '';
+    }
+  }, [calendarConnId]);
+
   useEffect(() => {
     try {
       const savedConnected = localStorage.getItem('gmail_connected') === 'true';
@@ -168,6 +186,20 @@ export default function SettingsModal({
       setGmailEmail(savedEmail);
       if (savedConnected && savedEmail) {
         setGmailStatusMessage(`Connected as ${savedEmail}`);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      const savedConnected = localStorage.getItem('calendar_connected') === 'true';
+      const savedConnId = localStorage.getItem('calendar_connection_request_id') || '';
+      const savedEmail = localStorage.getItem('calendar_email') || '';
+      setCalendarConnected(savedConnected);
+      setCalendarConnId(savedConnId);
+      setCalendarEmail(savedEmail);
+      if (savedConnected && savedEmail) {
+        setCalendarStatusMessage(`Connected as ${savedEmail}`);
       }
     } catch {}
   }, []);
@@ -348,6 +380,152 @@ export default function SettingsModal({
     }
   }, [readStoredConnectionRequestId, readStoredUserId]);
 
+  const handleConnectCalendar = useCallback(async () => {
+    try {
+      setConnectingCalendar(true);
+      setCalendarStatusMessage('');
+      const userId = ensureUserId();
+      const resp = await fetch('/api/calendar/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data?.ok) {
+        const msg = data?.error || `Failed (${resp.status})`;
+        setCalendarStatusMessage(msg);
+        return;
+      }
+      const url = data?.redirect_url;
+      const connId = data?.connection_request_id || '';
+      if (connId) {
+        setCalendarConnId(connId);
+        try {
+          localStorage.setItem('calendar_connection_request_id', connId);
+        } catch {}
+      }
+      setCalendarConnected(false);
+      setCalendarEmail('');
+      if (url) {
+        window.open(url, '_blank', 'noopener');
+        setCalendarStatusMessage('Calendar authorization opened in a new tab. Complete it, then press “Refresh status”.');
+      } else {
+        setCalendarStatusMessage('Connection initiated. Refresh status once authorization completes.');
+      }
+    } catch (e: any) {
+      setCalendarStatusMessage(e?.message || 'Failed to connect Calendar');
+    } finally {
+      setConnectingCalendar(false);
+    }
+  }, [ensureUserId]);
+
+  const refreshCalendarStatus = useCallback(async () => {
+    const userId = readStoredUserId();
+    const connectionRequestId = readStoredCalendarConnectionRequestId();
+    if (!userId && !connectionRequestId) {
+      setCalendarConnected(false);
+      setCalendarEmail('');
+      setCalendarStatusMessage('Connect Calendar to get started.');
+      return;
+    }
+
+    try {
+      setIsRefreshingCalendar(true);
+      setCalendarStatusMessage('Refreshing Calendar status…');
+      const resp = await fetch('/api/calendar/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, connectionRequestId }),
+      });
+      const data = await resp.json().catch(() => ({}));
+
+      if (!resp.ok || !data?.ok) {
+        const message = data?.error || `Failed (${resp.status})`;
+        setCalendarConnected(false);
+        setCalendarEmail('');
+        setCalendarStatusMessage(message);
+        return;
+      }
+
+      if (!calendarConnId && connectionRequestId) {
+        setCalendarConnId(connectionRequestId);
+      }
+
+      const email = typeof data?.email === 'string' ? data.email : '';
+      const connected = Boolean(data?.connected);
+
+      setCalendarConnected(connected);
+      setCalendarEmail(email);
+
+      if (connected) {
+        setCalendarStatusMessage(email ? `Connected as ${email}` : 'Calendar connected.');
+        try {
+          localStorage.setItem('calendar_connected', 'true');
+          if (email) localStorage.setItem('calendar_email', email);
+          if (typeof data?.user_id === 'string' && data.user_id) {
+            localStorage.setItem('openpoke_user_id', data.user_id);
+          }
+        } catch {}
+      } else {
+        const statusText = typeof data?.status === 'string' && data.status && data.status !== 'UNKNOWN'
+          ? `Status: ${data.status}`
+          : 'Not connected yet.';
+        setCalendarStatusMessage(statusText);
+        try {
+          localStorage.removeItem('calendar_connected');
+          localStorage.removeItem('calendar_email');
+        } catch {}
+      }
+    } catch (e: any) {
+      setCalendarConnected(false);
+      setCalendarEmail('');
+      setCalendarStatusMessage(e?.message || 'Failed to check Calendar status');
+    } finally {
+      setIsRefreshingCalendar(false);
+    }
+  }, [calendarConnId, readStoredCalendarConnectionRequestId, readStoredUserId]);
+
+  const handleDisconnectCalendar = useCallback(async () => {
+    if (typeof window !== 'undefined') {
+      const proceed = window.confirm('Disconnect Calendar from OpenPoke?');
+      if (!proceed) return;
+    }
+
+    try {
+      setIsDisconnectingCalendar(true);
+      setCalendarStatusMessage('Disconnecting Calendar…');
+      const userId = readStoredUserId();
+      const connectionRequestId = readStoredCalendarConnectionRequestId();
+      const resp = await fetch('/api/calendar/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, connectionRequestId }),
+      });
+      const data = await resp.json().catch(() => ({}));
+
+      if (!resp.ok || !data?.ok) {
+        const message = data?.error || `Failed (${resp.status})`;
+        setCalendarStatusMessage(message);
+        return;
+      }
+
+      setCalendarConnected(false);
+      setCalendarEmail('');
+      setCalendarConnId('');
+      setCalendarStatusMessage('Calendar disconnected.');
+      // Note: openpoke_user_id is shared with Gmail, so we leave it in place.
+      try {
+        localStorage.removeItem('calendar_connected');
+        localStorage.removeItem('calendar_email');
+        localStorage.removeItem('calendar_connection_request_id');
+      } catch {}
+    } catch (e: any) {
+      setCalendarStatusMessage(e?.message || 'Failed to disconnect Calendar');
+    } finally {
+      setIsDisconnectingCalendar(false);
+    }
+  }, [readStoredCalendarConnectionRequestId, readStoredUserId]);
+
   useEffect(() => {
     setTimezone(settings.timezone);
   }, [settings]);
@@ -355,13 +533,18 @@ export default function SettingsModal({
   useEffect(() => {
     if (!open) return;
     void refreshGmailStatus();
-  }, [open, refreshGmailStatus]);
+    void refreshCalendarStatus();
+  }, [open, refreshGmailStatus, refreshCalendarStatus]);
 
   if (!open) return null;
 
   const connectButtonLabel = connectingGmail ? 'Opening…' : gmailConnected ? 'Reconnect' : 'Connect Gmail';
   const refreshButtonLabel = isRefreshingGmail ? 'Refreshing…' : 'Refresh status';
   const disconnectButtonLabel = isDisconnecting ? 'Disconnecting…' : 'Disconnect';
+
+  const calendarConnectButtonLabel = connectingCalendar ? 'Opening…' : calendarConnected ? 'Reconnect' : 'Connect Calendar';
+  const calendarRefreshButtonLabel = isRefreshingCalendar ? 'Refreshing…' : 'Refresh status';
+  const calendarDisconnectButtonLabel = isDisconnectingCalendar ? 'Disconnecting…' : 'Disconnect';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
@@ -462,6 +645,74 @@ export default function SettingsModal({
                     aria-busy={isDisconnecting}
                   >
                     {disconnectButtonLabel}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-gray-200 bg-white/70 p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Google Calendar (via Composio)</div>
+                  <p className="mt-1 text-sm text-gray-600">
+                    Connect Google Calendar to unlock scheduling and event automations inside OpenPoke.
+                  </p>
+                </div>
+                <span
+                  className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${
+                    calendarConnected
+                      ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                      : 'bg-amber-50 text-amber-700 ring-amber-200'
+                  }`}
+                >
+                  {calendarConnected ? 'Connected' : 'Not connected'}
+                </span>
+              </div>
+
+              {calendarConnected ? (
+                <div className="mt-4 space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-gray-500">Connected account</div>
+                    <div className="mt-1 text-sm font-medium text-gray-900">{calendarEmail || 'Account connected'}</div>
+                  </div>
+                  {calendarStatusMessage && (
+                    <p className="text-xs text-gray-500" aria-live="polite">{calendarStatusMessage}</p>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-4 rounded-lg border border-dashed border-gray-200 p-3 text-sm text-gray-500" aria-live="polite">
+                  {calendarStatusMessage || 'Complete the connection to view your Calendar account details here.'}
+                </div>
+              )}
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={handleConnectCalendar}
+                  disabled={connectingCalendar || isRefreshingCalendar || isDisconnectingCalendar}
+                  aria-busy={connectingCalendar}
+                >
+                  {calendarConnectButtonLabel}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={refreshCalendarStatus}
+                  disabled={isRefreshingCalendar || connectingCalendar}
+                  aria-busy={isRefreshingCalendar}
+                >
+                  {calendarRefreshButtonLabel}
+                </button>
+                {calendarConnected && (
+                  <button
+                    type="button"
+                    className="rounded-md border border-transparent bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={handleDisconnectCalendar}
+                    disabled={isDisconnectingCalendar || connectingCalendar}
+                    aria-busy={isDisconnectingCalendar}
+                  >
+                    {calendarDisconnectButtonLabel}
                   </button>
                 )}
               </div>

@@ -17,6 +17,10 @@ Send Message to Agent Tool Usage
 - If you intend to call multiple tools and there are no dependencies between the calls, make all of the independent calls in the same message.
 - Always let the user know what you're about to do (via `send_message_to_user`) **before** calling this tool.
 - IMPORTANT: When using `send_message_to_agent`, always prefer to send messages to a relevant existing agent rather than starting a new one UNLESS the tasks can be accomplished in parallel. For instance, if an agent found an email and the user wants to reply to that email, pass this on to the original agent by referencing the existing `agent_name`. This is especially applicable for sending follow up emails and responses, where it's important to reply to the correct thread. Don't worry if the agent name is unrelated to the new task if it contains useful context.
+- There are two dedicated, specialized agents you should route to by name:
+  - `gmail-agent` — for anything involving sending, drafting, forwarding, replying to, or searching email and contacts.
+  - `calendar-agent` — for anything involving the calendar: checking availability, creating, updating, or deleting events, and scheduling.
+  Send email work to `gmail-agent` and scheduling work to `calendar-agent`. These two agents can also collaborate directly with each other (for example, the calendar agent can ask the gmail agent to email an invitation), so you can hand a combined request like "schedule a meeting and email an invite" to whichever agent owns the primary task.
 
 Send Message to User Tool Usage
 

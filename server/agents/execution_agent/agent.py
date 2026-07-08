@@ -5,28 +5,39 @@ from typing import List, Optional, Dict, Any
 
 from ...services.execution import get_execution_agent_logs
 from ...logging_config import logger
+from .roles import CALENDAR_AGENT, GMAIL_AGENT, ROLE_CALENDAR, resolve_role
 
 
-# Load system prompt template from file
-_prompt_path = Path(__file__).parent / "system_prompt.md"
-if _prompt_path.exists():
-    SYSTEM_PROMPT_TEMPLATE = _prompt_path.read_text(encoding="utf-8").strip()
-else:
-    # Placeholder template - you'll replace this with actual instructions
-    SYSTEM_PROMPT_TEMPLATE = """You are an execution agent responsible for completing specific tasks using available tools.
+# Load system prompt templates from files, one per role.
+_DIR = Path(__file__).parent
+
+
+def _load_template(filename: str) -> Optional[str]:
+    path = _DIR / filename
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return None
+
+
+_FALLBACK_TEMPLATE = """You are an execution agent responsible for completing specific tasks using available tools.
 
 Agent Name: {agent_name}
 Purpose: {agent_purpose}
 
-Instructions:
-[TO BE FILLED IN BY USER]
+Analyze what needs to be done, use the appropriate tools, and provide clear status updates on your actions."""
 
-You have access to Gmail tools to help complete your tasks. When given instructions:
-1. Analyze what needs to be done
-2. Use the appropriate tools to complete the task
-3. Provide clear status updates on your actions
+# Gmail/general agents share the original prompt; calendar agents get their own.
+SYSTEM_PROMPT_TEMPLATE = _load_template("system_prompt.md") or _FALLBACK_TEMPLATE
+CALENDAR_PROMPT_TEMPLATE = _load_template("system_prompt_calendar.md") or _FALLBACK_TEMPLATE
 
-Be thorough, accurate, and efficient in your execution."""
+# Appended to every specialized agent so they know how to collaborate.
+_INTER_AGENT_GUIDANCE = f"""
+
+# Working With Other Agents
+You are one of several specialized agents and can delegate to another agent using the `message_agent` tool, which returns that agent's reply.
+- `{GMAIL_AGENT}` handles sending and searching email.
+- `{CALENDAR_AGENT}` handles calendar and scheduling.
+When a task needs a capability you don't have (e.g. you manage the calendar but need to email an invite, or vice versa), call `message_agent` with the other agent's name and clear, self-contained instructions, then use its response to finish your task."""
 
 
 class ExecutionAgent:
@@ -51,13 +62,18 @@ class ExecutionAgent:
 
     # Generate system prompt template with agent name and purpose derived from name
     def build_system_prompt(self) -> str:
-        """Build the system prompt for this agent."""
+        """Build the role-appropriate system prompt for this agent."""
+        role = resolve_role(self.name)
         agent_purpose = f"Handle tasks related to: {self.name}"
 
-        return SYSTEM_PROMPT_TEMPLATE.format(
-            agent_name=self.name,
-            agent_purpose=agent_purpose
-        )
+        template = CALENDAR_PROMPT_TEMPLATE if role == ROLE_CALENDAR else SYSTEM_PROMPT_TEMPLATE
+        prompt = template.format(agent_name=self.name, agent_purpose=agent_purpose)
+
+        # Give the dedicated gmail/calendar agents awareness of how to collaborate.
+        if self.name.strip().lower() in {GMAIL_AGENT, CALENDAR_AGENT}:
+            prompt = f"{prompt}{_INTER_AGENT_GUIDANCE}"
+
+        return prompt
 
     # Combine base system prompt with conversation history, applying conversation limits
     def build_system_prompt_with_history(self) -> str:

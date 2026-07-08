@@ -8,6 +8,13 @@ from .conversation import (
     schedule_summarization,
 )
 from .conversation.chat_handler import handle_chat_request
+from .calendar import (
+    disconnect_calendar_account,
+    execute_calendar_tool,
+    fetch_calendar_status,
+    get_active_calendar_user_id,
+    initiate_calendar_connect,
+)
 from .execution import AgentRoster, ExecutionAgentLogStore, get_agent_roster, get_execution_agent_logs
 from .gmail import (
     GmailSeenStore,
@@ -36,6 +43,11 @@ __all__ = [
     "ExecutionAgentLogStore",
     "get_agent_roster",
     "get_execution_agent_logs",
+    "disconnect_calendar_account",
+    "execute_calendar_tool",
+    "fetch_calendar_status",
+    "get_active_calendar_user_id",
+    "initiate_calendar_connect",
     "GmailSeenStore",
     "ImportantEmailWatcher",
     "classify_email_importance",

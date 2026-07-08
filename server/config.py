@@ -31,6 +31,16 @@ _load_env_file()
 DEFAULT_APP_NAME = "OpenPoke Server"
 DEFAULT_APP_VERSION = "0.3.0"
 
+# Global default model for all agents. Override any single agent with its own
+# env var below (e.g. OPENPOKE_INTERACTION_MODEL). Both accept any OpenRouter
+# model slug, e.g. "anthropic/claude-sonnet-4" or "openai/gpt-oss-20b:free".
+DEFAULT_LLM_MODEL = os.getenv("OPENPOKE_LLM_MODEL", "anthropic/claude-sonnet-4")
+
+
+def _model(name: str) -> str:
+    """Resolve a per-agent model override, falling back to the global default."""
+    return os.getenv(name, DEFAULT_LLM_MODEL)
+
 
 def _env_int(name: str, fallback: int) -> int:
     try:
@@ -50,16 +60,17 @@ class Settings(BaseModel):
     server_host: str = Field(default=os.getenv("OPENPOKE_HOST", "0.0.0.0"))
     server_port: int = Field(default=_env_int("OPENPOKE_PORT", 8001))
 
-    # LLM model selection
-    interaction_agent_model: str = Field(default="anthropic/claude-sonnet-4")
-    execution_agent_model: str = Field(default="anthropic/claude-sonnet-4")
-    execution_agent_search_model: str = Field(default="anthropic/claude-sonnet-4")
-    summarizer_model: str = Field(default="anthropic/claude-sonnet-4")
-    email_classifier_model: str = Field(default="anthropic/claude-sonnet-4")
+    # LLM model selection (env-overridable; fall back to DEFAULT_LLM_MODEL)
+    interaction_agent_model: str = Field(default=_model("OPENPOKE_INTERACTION_MODEL"))
+    execution_agent_model: str = Field(default=_model("OPENPOKE_EXECUTION_MODEL"))
+    execution_agent_search_model: str = Field(default=_model("OPENPOKE_EXECUTION_SEARCH_MODEL"))
+    summarizer_model: str = Field(default=_model("OPENPOKE_SUMMARIZER_MODEL"))
+    email_classifier_model: str = Field(default=_model("OPENPOKE_EMAIL_CLASSIFIER_MODEL"))
 
     # Credentials / integrations
     openrouter_api_key: Optional[str] = Field(default=os.getenv("OPENROUTER_API_KEY"))
     composio_gmail_auth_config_id: Optional[str] = Field(default=os.getenv("COMPOSIO_GMAIL_AUTH_CONFIG_ID"))
+    composio_calendar_auth_config_id: Optional[str] = Field(default=os.getenv("COMPOSIO_CALENDAR_AUTH_CONFIG_ID"))
     composio_api_key: Optional[str] = Field(default=os.getenv("COMPOSIO_API_KEY"))
 
     # HTTP behaviour

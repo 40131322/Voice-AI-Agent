@@ -1,3 +1,4 @@
+from .calendar import CalendarConnectPayload, CalendarDisconnectPayload, CalendarStatusPayload
 from .chat import ChatHistoryClearResponse, ChatHistoryResponse, ChatMessage, ChatRequest
 from .gmail import GmailConnectPayload, GmailDisconnectPayload, GmailStatusPayload
 from .meta import HealthResponse, RootResponse, SetTimezoneRequest, SetTimezoneResponse
@@ -7,6 +8,9 @@ __all__ = [
     "ChatRequest",
     "ChatHistoryResponse",
     "ChatHistoryClearResponse",
+    "CalendarConnectPayload",
+    "CalendarDisconnectPayload",
+    "CalendarStatusPayload",
     "GmailConnectPayload",
     "GmailDisconnectPayload",
     "GmailStatusPayload",
