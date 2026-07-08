@@ -14,23 +14,30 @@ from server.services.session import patch_session, read_session
 _CALENDAR_AGENT_NAME = "calendar-agent"
 
 _NOT_CONNECTED = "Google Calendar not connected. Please connect Calendar in settings first."
-# 911 safety gate (defense in depth): refuse to book while triage flagged an emergency.
+# Safety gates (defense in depth): refuse to book while triage flagged an
+# emergency, or after the call was handed to a human.
 _EMERGENCY_BLOCKED = (
     "Booking refused: this call is flagged as a medical emergency. "
     "Instruct the caller to call 911; do not schedule an appointment."
 )
+_HANDOFF_BLOCKED = (
+    "Booking refused: this call has been handed off to a human staff member. "
+    "The staff member owns scheduling now; do not book."
+)
 
 
 def _emergency_block(call_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Return a refusal payload when the session is in emergency status."""
+    """Return a refusal payload when the session is in emergency/handoff status."""
     if not call_id:
         return None
-    if read_session(call_id).get("status") == "emergency":
+    status = read_session(call_id).get("status")
+    if status in ("emergency", "handoff"):
         _LOG_STORE.record_action(
             _CALENDAR_AGENT_NAME,
-            description=f"calendar_create_event BLOCKED (emergency) | call_id={call_id}",
+            description=f"calendar_create_event BLOCKED ({status}) | call_id={call_id}",
         )
-        return {"error": _EMERGENCY_BLOCKED, "blocked": True}
+        message = _EMERGENCY_BLOCKED if status == "emergency" else _HANDOFF_BLOCKED
+        return {"error": message, "blocked": True}
     return None
 
 _SCHEMAS: List[Dict[str, Any]] = [
@@ -701,9 +708,11 @@ def clinic_book_slot(call_id: str, slot_id: str) -> Dict[str, Any]:
     """Book a chosen slot on the real Google Calendar; 911-gated and idempotent."""
     session = read_session(call_id)
 
-    # 911 code gate (defense in depth: prompt rule + this guard).
+    # 911 + handoff code gate (defense in depth: prompt rule + this guard).
     if session.get("status") == "emergency":
         return {"error": _EMERGENCY_BLOCKED, "blocked": True}
+    if session.get("status") == "handoff":
+        return {"error": _HANDOFF_BLOCKED, "blocked": True}
 
     # Idempotency: keyed on call_id + slot_id so a retry never double-books.
     existing = session.get("booking") or {}

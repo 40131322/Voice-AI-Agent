@@ -77,6 +77,14 @@ class Settings(BaseModel):
     composio_calendar_auth_config_id: Optional[str] = Field(default=os.getenv("COMPOSIO_CALENDAR_AUTH_CONFIG_ID"))
     composio_api_key: Optional[str] = Field(default=os.getenv("COMPOSIO_API_KEY"))
 
+    # Human handoff: the front-desk line a human transfer dials. Override with
+    # OPENPOKE_HANDOFF_STAFF_LINE (a real phone number/SIP URI). Default is a
+    # mock placeholder — the telephony transfer itself is still mocked in
+    # interaction_agent/intake_tools.py::request_human_handoff.
+    handoff_staff_line: str = Field(
+        default=os.getenv("OPENPOKE_HANDOFF_STAFF_LINE", "front-desk staff line (mock transfer)")
+    )
+
     # HTTP behaviour
     cors_allow_origins_raw: str = Field(default=os.getenv("OPENPOKE_CORS_ALLOW_ORIGINS", "*"))
     enable_docs: bool = Field(default=os.getenv("OPENPOKE_ENABLE_DOCS", "1") != "0")

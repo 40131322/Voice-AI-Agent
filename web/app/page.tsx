@@ -1,15 +1,36 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SettingsModal, { useSettings } from '@/components/SettingsModal';
 import { ChatHeader } from '@/components/chat/ChatHeader';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { ChatMessages } from '@/components/chat/ChatMessages';
 import { ErrorBanner } from '@/components/chat/ErrorBanner';
 import { useAutoScroll } from '@/components/chat/useAutoScroll';
+import { useVoiceInterface } from '@/components/chat/useVoiceInterface';
 import type { ChatBubble } from '@/components/chat/types';
 
 const POLL_INTERVAL_MS = 1500;
+
+// Proactive opening greeting, shown before the caller says anything. It doubles
+// as the voice onboarding (mic controls live in the browser, so this stays on
+// the client) and front-loads the intake so the caller can answer in one go.
+const GREETING = [
+  "Hi there, thanks for calling Riverside Family Clinic — my name is Ava, and I'll help you get scheduled today.",
+  '',
+  "Quick heads-up on how this works: press and hold the mic button while you speak, then release when you're done — that's your push-to-talk. I'll stay quiet while you're holding it, and I'll speak back once you let go. (You can also just type in the box below if you'd rather.)",
+  '',
+  'To get you booked as fast as possible, go ahead and give me everything at once in one go:',
+  '• Your full name and date of birth',
+  "• Whether you're a new or existing patient",
+  '• A good callback number',
+  '• Your insurance provider',
+  "• And the reason for your visit — what's going on and how you're feeling",
+  '',
+  "Take your time, and don't worry about the order. Whenever you're ready, hold the mic and tell me all of that — I'll sort out the details and confirm anything I need.",
+  '',
+  'And if this is a medical emergency, please hang up and call 911 right away.',
+].join('\n');
 
 const formatEscapeCharacters = (text: string): string => {
   return text
@@ -193,6 +214,92 @@ export default function Page() {
     [loadHistory],
   );
 
+  // Voice interface: a thin client shim over the SAME text send path. It has no
+  // tools and creates no agent — it just speaks/recognizes around sendMessage.
+  const voice = useVoiceInterface({ onFinalTranscript: sendMessage });
+
+  // Speak newly-arrived assistant replies (TTS). TTS is DECOUPLED from the mic:
+  // replies are spoken when the mic is OFF (typed conversation) — with the mic
+  // off there is no echo-loop risk, so the previous `voiceEnabled` gate is gone.
+  // Voice mode (mic on) still speaks through the same path. `spokenRef` is seeded
+  // once on mount so pre-existing history is NOT replayed; only replies that
+  // arrive afterward are spoken.
+  const spokenRef = useRef<string | null>(null);
+  const spokenSeededRef = useRef(false);
+
+  useEffect(() => {
+    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+    if (!spokenSeededRef.current) {
+      // First run: treat whatever is already on screen as already-spoken.
+      spokenSeededRef.current = true;
+      spokenRef.current = lastAssistant?.text ?? null;
+      return;
+    }
+    if (lastAssistant && lastAssistant.text !== spokenRef.current) {
+      spokenRef.current = lastAssistant.text;
+      voice.speak(lastAssistant.text);
+    }
+  }, [messages, voice]);
+
+  // Latest voice handle, so the mount-only effect below always calls the current
+  // speak/stopSpeaking without re-subscribing on every render.
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+
+  // The greeting is spoken exactly ONCE at the start of the call, and never again.
+  // `greetingDoneRef` also gates the autoplay fallback below AND is flipped the
+  // instant the caller types or holds the mic (see stopTts) so it can't sneak in
+  // after they've started interacting.
+  const greetingDoneRef = useRef(false);
+
+  // Immediately stop ALL TTS (greeting or a reply) and make sure the greeting
+  // fallback can never fire afterward. Called the moment the caller types or
+  // holds the mic — TTS stops no matter what.
+  const stopTts = useCallback(() => {
+    greetingDoneRef.current = true;
+    voiceRef.current.stopSpeaking();
+  }, []);
+
+  // Speak the opening greeting once at the very start. Browsers block
+  // speechSynthesis before the first user gesture (autoplay policy), so if the
+  // immediate attempt is dropped we retry on the first interaction — UNLESS the
+  // caller has already typed/held the mic (greetingDoneRef), in which case we
+  // stay silent. Mount-only: it must not re-run and re-speak on every render.
+  useEffect(() => {
+    const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
+    if (!synth) return;
+
+    // Fallback retries on pointerdown ONLY, never keydown: a keystroke means the
+    // caller is typing (or Alt+Space push-to-talk), and typing must keep TTS
+    // silent — so we never let a key event start the greeting. handleStartHold
+    // sets greetingDoneRef before this fires for a mic-button hold, so that's
+    // suppressed too; a neutral click still recovers a blocked greeting.
+    const onFirstGesture = () => {
+      if (!greetingDoneRef.current && !synth.speaking && !synth.pending) {
+        voiceRef.current.speak(GREETING);
+      }
+      greetingDoneRef.current = true;
+      detach();
+    };
+    const detach = () => {
+      window.removeEventListener('pointerdown', onFirstGesture);
+    };
+
+    voiceRef.current.speak(GREETING); // immediate attempt (may be deferred by autoplay)
+    window.addEventListener('pointerdown', onFirstGesture);
+    return detach;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The greeting is a pinned, client-only first bubble (it explains browser mic
+  // controls, so it never enters the agent's conversation/history). It is shown
+  // as text and spoken once on start (see the effect above); typed/voice replies
+  // afterward are spoken by the reply-TTS effect.
+  const displayMessages = useMemo<ChatBubble[]>(
+    () => [{ id: 'greeting-intro', role: 'assistant', text: GREETING }, ...messages],
+    [messages],
+  );
+
   const handleClearHistory = useCallback(async () => {
     try {
       const res = await fetch('/api/chat/history', { method: 'DELETE' });
@@ -222,8 +329,15 @@ export default function Page() {
   }, [canSubmit, input, sendMessage, setInput]);
 
   const handleInputChange = useCallback((value: string) => {
+    stopTts(); // the moment the caller types, any TTS (greeting or reply) stops.
     setInput(value);
-  }, [setInput]);
+  }, [setInput, stopTts]);
+
+  // Holding the mic interrupts TTS too (barge-in), then starts push-to-talk.
+  const handleStartHold = useCallback(() => {
+    stopTts();
+    voice.startHold();
+  }, [stopTts, voice]);
 
   const clearError = useCallback(() => setError(null), [setError]);
 
@@ -234,7 +348,7 @@ export default function Page() {
 
         <div className="card flex-1 overflow-hidden">
           <ChatMessages
-            messages={messages}
+            messages={displayMessages}
             isWaitingForResponse={isWaitingForResponse}
             scrollContainerRef={scrollContainerRef}
             onScroll={handleScroll}
@@ -249,6 +363,14 @@ export default function Page() {
               placeholder={inputPlaceholder}
               onChange={handleInputChange}
               onSubmit={handleSubmit}
+              voiceSupported={voice.supported}
+              voiceEnabled={voice.voiceEnabled}
+              isListening={voice.isListening}
+              isSpeaking={voice.isSpeaking}
+              isHolding={voice.isHolding}
+              interim={voice.interim}
+              onStartHold={handleStartHold}
+              onStopHold={voice.stopHold}
             />
           </div>
         </div>

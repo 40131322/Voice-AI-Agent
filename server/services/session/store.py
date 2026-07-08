@@ -50,11 +50,33 @@ def default_session(call_id: str) -> Dict[str, Any]:
         "status": "intake",  # intake | emergency | scheduling | booked | handoff
         "caller": {"name": None, "dob": None, "callback": None, "is_new": None},
         "intake": {"symptoms": [], "insurance": None, "notes": None, "updated_at": None},
-        "triage": {"level": None, "urgency": None, "confidence": None, "rationale": None},
+        # level: emergency | same_day | soon | routine (rule-based decision tree;
+        # see execution_agent/tasks/clinic/rules.py). source/matched_rules/
+        # decision_path/needs_human_review are the explainability trail.
+        "triage": {
+            "level": None,
+            "urgency": None,
+            "confidence": None,
+            "rationale": None,
+            "source": None,
+            "matched_rules": [],
+            "decision_path": [],
+            "needs_human_review": False,
+        },
         "context": {"prior_visits": [], "existing_events": []},
         "availability": [],  # [{slot_id, provider, start, end}]
         "booking": {"slot_id": None, "event_id": None, "confirmation_id": None},
         "confirmation": {"email_status": None, "message_id": None},
+        # Human handoff path (request_human_handoff on the interaction agent).
+        "handoff": {
+            "requested": False,
+            "reason": None,
+            "details": None,
+            "requested_at": None,
+            "callback_on_file": None,
+            "transfer_status": None,
+            "transferred_to": None,
+        },
     }
 
 

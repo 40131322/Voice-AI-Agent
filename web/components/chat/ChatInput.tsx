@@ -1,4 +1,4 @@
-import { FormEvent } from 'react';
+import { FormEvent, PointerEvent as ReactPointerEvent } from 'react';
 
 interface ChatInputProps {
   value: string;
@@ -11,8 +11,11 @@ interface ChatInputProps {
   voiceEnabled?: boolean;
   isListening?: boolean;
   isSpeaking?: boolean;
+  isHolding?: boolean;
   interim?: string;
-  onToggleVoice?: () => void;
+  // Push-to-talk: hold the mic button to talk, release to send.
+  onStartHold?: () => void;
+  onStopHold?: () => void;
 }
 
 export function ChatInput({
@@ -25,8 +28,10 @@ export function ChatInput({
   voiceEnabled = false,
   isListening = false,
   isSpeaking = false,
+  isHolding = false,
   interim = '',
-  onToggleVoice,
+  onStartHold,
+  onStopHold,
 }: ChatInputProps) {
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -34,15 +39,29 @@ export function ChatInput({
     void onSubmit();
   };
 
-  const voiceStatus = voiceEnabled
-    ? isSpeaking
-      ? 'Speaking…'
+  const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    // Capture the pointer so release is detected even if the cursor/finger
+    // drifts off the button while held.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // ignore — capture is best-effort
+    }
+    onStartHold?.();
+  };
+
+  const handlePointerUp = () => {
+    onStopHold?.();
+  };
+
+  const voiceStatus = isHolding
+    ? 'Listening… release to send'
+    : isSpeaking
+      ? 'Speaking… (hold the mic to interrupt)'
       : interim
         ? `“${interim}”`
-        : isListening
-          ? 'Listening…'
-          : 'Voice on'
-    : '';
+        : 'Hold the mic button to talk';
 
   return (
     <div className="flex flex-col gap-1">
@@ -50,19 +69,23 @@ export function ChatInput({
         {voiceSupported && (
           <button
             type="button"
-            onClick={onToggleVoice}
-            aria-pressed={voiceEnabled}
-            aria-label={voiceEnabled ? 'Turn voice off' : 'Turn voice on'}
-            title={voiceEnabled ? 'Turn voice off' : 'Turn voice on'}
-            className={`rounded-md border px-3 py-2 text-sm transition-colors ${
-              voiceEnabled
-                ? isListening
-                  ? 'border-red-300 bg-red-50 text-red-600 animate-pulse'
-                  : 'border-blue-300 bg-blue-50 text-blue-600'
-                : 'border-gray-200 hover:bg-gray-50'
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            onLostPointerCapture={handlePointerUp}
+            aria-pressed={isHolding}
+            aria-label="Hold to talk"
+            title="Hold to talk (or hold ⌥Space / Alt+Space)"
+            style={{ touchAction: 'none' }}
+            className={`select-none rounded-md border px-3 py-2 text-sm transition-colors ${
+              isHolding
+                ? 'border-red-300 bg-red-50 text-red-600 animate-pulse'
+                : isSpeaking
+                  ? 'border-blue-300 bg-blue-50 text-blue-600'
+                  : 'border-gray-200 hover:bg-gray-50'
             }`}
           >
-            {voiceEnabled ? '🎙️' : '🎤'}
+            {isHolding ? '🎙️' : '🎤'}
           </button>
         )}
         <input
@@ -75,7 +98,7 @@ export function ChatInput({
           Send
         </button>
       </form>
-      {voiceSupported && voiceEnabled && (
+      {voiceSupported && (
         <span className="px-1 text-xs text-gray-500">{voiceStatus}</span>
       )}
     </div>

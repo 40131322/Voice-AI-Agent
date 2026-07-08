@@ -33,6 +33,7 @@ __pycache__/
 # Data folder
 server/data/
 data/
+old/
 
 # Python virtual environment
 server/venv/
@@ -44,3 +45,4 @@ server/venv/
 # Generated documentation / analysis artifacts
 server/repomix-output.txt
 server/plans/
+/.claude

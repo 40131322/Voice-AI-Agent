@@ -237,6 +237,8 @@ def handle_tool_call(name: str, arguments: Any) -> ToolResult:
             return record_intake(**args)
         if name == "read_intake":
             return read_intake(**args)
+        if name == "request_human_handoff":
+            return request_human_handoff(**args)
 
         logger.warning("unexpected tool", extra={"tool": name})
         return ToolResult(success=False, payload={"error": f"Unknown tool: {name}"})
@@ -256,6 +258,7 @@ from .intake_tools import (  # noqa: E402
     INTAKE_TOOL_SCHEMAS,
     record_intake,
     read_intake,
+    request_human_handoff,
 )
 
 TOOL_SCHEMAS.extend(INTAKE_TOOL_SCHEMAS)

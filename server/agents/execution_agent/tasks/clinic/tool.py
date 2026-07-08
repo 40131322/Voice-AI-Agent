@@ -1,12 +1,18 @@
 """Clinic triage task implementation (mirror of tasks/search_email/tool.py).
 
-Reads the session file, asks the model for a triage verdict, writes the result
-back to session['triage'], and flips session['status'] to "emergency" on a 911
-finding so the calendar booking guard (tools/calendar.py) can refuse.
+Priority decision order (explainable and conservative, per the build brief):
 
-This is a TASK: it calls the model directly via server.openrouter_client, exactly
-like the email-search task — it is NOT a Composio tool. It is async because
-``request_chat_completion`` is async (see search_email/tool.py).
+1. RULE-BASED DECISION TREE (rules.py) — deterministic, zero-latency, and every
+   verdict carries the matched rule ids + the exact path through the tree.
+   Levels: emergency (911) / same_day / soon / routine.
+2. MODEL FALLBACK — only when symptoms exist but match NO rule, the existing
+   LLM screen runs (system_prompt.py). Its verdict is tagged source="model_fallback".
+3. CONSERVATIVE DEFAULT — if the model is unavailable/fails, default to "soon"
+   and set needs_human_review=True so the voice agent offers a human handoff.
+
+The verdict is written back to session['triage']; on an emergency the session
+status flips to "emergency" so the calendar booking guard (tools/calendar.py)
+can refuse.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from server.openrouter_client import request_chat_completion
 from server.services.execution import get_execution_agent_logs
 from server.services.session import patch_session, read_session
 
+from .rules import conservative_default, evaluate_rules
 from .schemas import TASK_TOOL_NAME, TriageResult, TriageToolResult
 from .system_prompt import get_system_prompt
 
@@ -27,9 +34,7 @@ _LOG_STORE = get_execution_agent_logs()
 _TRIAGE_AGENT_NAME = "medical-execution-agent"
 _SUBMIT_TOOL_NAME = "submit_triage"
 
-# Completion tool the triage model calls to return a structured verdict. Passing
-# it as a tool (rather than trusting free-text JSON) makes the shape reliable; we
-# still fall back to parsing message content if the model answers in text.
+# Completion tool the fallback triage model calls to return a structured verdict.
 _TRIAGE_COMPLETION_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
@@ -40,7 +45,7 @@ _TRIAGE_COMPLETION_SCHEMA: Dict[str, Any] = {
             "properties": {
                 "level": {
                     "type": "string",
-                    "enum": ["emergency", "urgent", "routine"],
+                    "enum": ["emergency", "same_day", "soon", "routine"],
                 },
                 "urgency": {"type": "integer", "minimum": 1, "maximum": 5},
                 "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
@@ -61,19 +66,92 @@ def _model_id() -> str:
 
 
 async def triage_screen(call_id: str) -> Dict[str, Any]:
-    """Screen the current intake for an emergency and update the session file."""
+    """Screen the current intake and update the session file.
+
+    Rules first; model only as fallback for unmatched symptoms; conservative
+    default if the model is unavailable.
+    """
     session = read_session(call_id)
     intake = session.get("intake", {})
     caller = session.get("caller", {})
 
-    settings = get_settings()
-    if not settings.openrouter_api_key:
-        return TriageToolResult(
-            status="error",
-            call_id=call_id,
-            error="OpenRouter API key not configured. Set OPENROUTER_API_KEY.",
-        ).model_dump(exclude_none=True)
+    # ---- 1. Rule-based decision tree (the primary, explainable path) -------
+    decision = evaluate_rules(intake.get("symptoms") or [], intake.get("notes"))
+    if decision.matched:
+        verdict = TriageResult(
+            level=decision.level,
+            urgency=decision.urgency,
+            confidence=decision.confidence,
+            rationale=decision.rationale,
+            red_flags=decision.red_flags,
+            source="rules",
+            matched_rules=decision.matched_rules,
+            decision_path=decision.decision_path,
+            needs_human_review=decision.needs_human_review,
+        )
+        return _finalize(call_id, verdict)
 
+    # ---- 2. Model fallback (symptoms present, no rule matched) -------------
+    settings = get_settings()
+    if settings.openrouter_api_key:
+        try:
+            verdict = await _model_screen(caller, intake, settings.openrouter_api_key)
+            verdict.source = "model_fallback"
+            verdict.decision_path = decision.decision_path + [
+                "[6a] model fallback screen -> " + verdict.level
+            ]
+            # An unmatched-by-rules verdict is inherently less certain: keep the
+            # human-review flag so the voice agent can offer a handoff.
+            verdict.needs_human_review = True
+            return _finalize(call_id, verdict)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[triage] model fallback failed for %s: %s", call_id, exc)
+            _LOG_STORE.record_action(
+                _TRIAGE_AGENT_NAME, description=f"triage model fallback failed | {exc}"
+            )
+    else:
+        logger.warning("[triage] no OpenRouter key; using conservative default")
+
+    # ---- 3. Conservative default (never leave the caller unclassified) -----
+    decision = conservative_default(decision)
+    verdict = TriageResult(
+        level=decision.level,
+        urgency=decision.urgency,
+        confidence=decision.confidence,
+        rationale=decision.rationale,
+        source="default_conservative",
+        matched_rules=decision.matched_rules,
+        decision_path=decision.decision_path,
+        needs_human_review=True,
+    )
+    return _finalize(call_id, verdict)
+
+
+def _finalize(call_id: str, verdict: TriageResult) -> Dict[str, Any]:
+    """Write the verdict to the blackboard and build the tool result."""
+    patch: Dict[str, Any] = {"triage": verdict.model_dump()}
+    if verdict.level == "emergency":
+        patch["status"] = "emergency"  # booking guard (tools/calendar.py) reads this
+    patch_session(call_id, patch)
+
+    _LOG_STORE.record_action(
+        _TRIAGE_AGENT_NAME,
+        description=(
+            f"triage_screen -> {verdict.level} (urgency {verdict.urgency}, "
+            f"source {verdict.source}, rules {verdict.matched_rules or '-'}"
+            + (", NEEDS HUMAN REVIEW" if verdict.needs_human_review else "")
+            + ")"
+        ),
+    )
+    return TriageToolResult(
+        status="success", call_id=call_id, triage=verdict
+    ).model_dump(exclude_none=True)
+
+
+async def _model_screen(
+    caller: Dict[str, Any], intake: Dict[str, Any], api_key: str
+) -> TriageResult:
+    """LLM fallback screen (previous primary path, now used only when rules miss)."""
     user_payload = json.dumps({"caller": caller, "intake": intake}, ensure_ascii=False)
     messages = [
         {
@@ -85,38 +163,14 @@ async def triage_screen(call_id: str) -> Dict[str, Any]:
             ),
         }
     ]
-
-    try:
-        response = await request_chat_completion(
-            model=_model_id(),
-            messages=messages,
-            system=get_system_prompt(),
-            api_key=settings.openrouter_api_key,
-            tools=[_TRIAGE_COMPLETION_SCHEMA],
-        )
-        verdict = _parse_verdict(response)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("[triage] screen failed for %s: %s", call_id, exc)
-        _LOG_STORE.record_action(
-            _TRIAGE_AGENT_NAME, description=f"triage_screen failed | {exc}"
-        )
-        return TriageToolResult(
-            status="error", call_id=call_id, error=str(exc)
-        ).model_dump(exclude_none=True)
-
-    # Write verdict back to the blackboard.
-    patch: Dict[str, Any] = {"triage": verdict.model_dump()}
-    if verdict.level == "emergency":
-        patch["status"] = "emergency"  # booking guard (tools/calendar.py) reads this
-    patch_session(call_id, patch)
-
-    _LOG_STORE.record_action(
-        _TRIAGE_AGENT_NAME,
-        description=f"triage_screen -> {verdict.level} (urgency {verdict.urgency})",
+    response = await request_chat_completion(
+        model=_model_id(),
+        messages=messages,
+        system=get_system_prompt(),
+        api_key=api_key,
+        tools=[_TRIAGE_COMPLETION_SCHEMA],
     )
-    return TriageToolResult(
-        status="success", call_id=call_id, triage=verdict
-    ).model_dump(exclude_none=True)
+    return _parse_verdict(response)
 
 
 def _parse_verdict(response: Dict[str, Any]) -> TriageResult:
@@ -148,7 +202,7 @@ def _strip_code_fence(text: str) -> str:
         # drop the opening fence line (``` or ```json) and any trailing fence
         stripped = stripped.split("\n", 1)[-1] if "\n" in stripped else stripped
         if stripped.rstrip().endswith("```"):
-            stripped = stripped.rstrip()[: -3]
+            stripped = stripped.rstrip()[:-3]
     return stripped.strip()
 
 
