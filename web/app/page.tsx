@@ -32,6 +32,12 @@ const GREETING = [
   'And if this is a medical emergency, please hang up and call 911 right away.',
 ].join('\n');
 
+// Module-scope guard: the greeting is spoken exactly ONCE per page load. This
+// lives outside the component so it survives React StrictMode's dev remount
+// (which re-runs mount effects and would otherwise read the greeting twice); it
+// resets only on a real page reload, which is exactly "once per load".
+let greetingSpokenThisLoad = false;
+
 const formatEscapeCharacters = (text: string): string => {
   return text
     .replace(/\\n/g, '\n')
@@ -260,11 +266,12 @@ export default function Page() {
     voiceRef.current.stopSpeaking();
   }, []);
 
-  // Speak the opening greeting once at the very start. Browsers block
+  // Speak the opening greeting once per page load. Browsers block
   // speechSynthesis before the first user gesture (autoplay policy), so if the
   // immediate attempt is dropped we retry on the first interaction — UNLESS the
   // caller has already typed/held the mic (greetingDoneRef), in which case we
-  // stay silent. Mount-only: it must not re-run and re-speak on every render.
+  // stay silent. The immediate read is guarded by the module-scope
+  // `greetingSpokenThisLoad` flag so StrictMode's dev remount can't read twice.
   useEffect(() => {
     const synth = typeof window !== 'undefined' ? window.speechSynthesis : null;
     if (!synth) return;
@@ -285,7 +292,10 @@ export default function Page() {
       window.removeEventListener('pointerdown', onFirstGesture);
     };
 
-    voiceRef.current.speak(GREETING); // immediate attempt (may be deferred by autoplay)
+    if (!greetingSpokenThisLoad) {
+      greetingSpokenThisLoad = true;
+      voiceRef.current.speak(GREETING); // immediate attempt (may be deferred by autoplay)
+    }
     window.addEventListener('pointerdown', onFirstGesture);
     return detach;
     // eslint-disable-next-line react-hooks/exhaustive-deps
